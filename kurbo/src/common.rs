@@ -1098,6 +1098,16 @@ mod tests {
     }
 
     #[test]
+    fn test_solve_itp_tiny_epsilon() {
+        // An `epsilon` this small relative to the bracket makes the internal
+        // shift width exceed 63; that used to overflow (debug) or wrap around
+        // and spin forever (release). See #602.
+        let f = |x: f64| x.powi(3) - x - 2.0;
+        let x = solve_itp(f, 1., 2., 1e-25, 1, 0.2, f(1.), f(2.));
+        assert!(f(x).abs() < 1e-9, "got {x}");
+    }
+
+    #[test]
     fn test_inv_arclen() {
         use crate::{ParamCurve, ParamCurveArclen};
         let c = crate::CubicBez::new(
