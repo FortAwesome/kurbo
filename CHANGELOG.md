@@ -21,6 +21,7 @@ This release has an [MSRV][] of 1.85.
 ## Fixed
 
 - `fit_to_cubic` no longer gives up on a range whose endpoints are close together but whose curve doubles back on itself, which could make `fit_to_bezpath_opt` panic on near-degenerate paths. ([#597][] by [@mlwilkerson][])
+- `fit_to_bezpath_opt` no longer panics when a range accepted by its segment search turns out not to fit; it subdivides and retries instead. ([#597][] by [@mlwilkerson][])
 
 ## [0.13.1][] (2026-05-13)
 
