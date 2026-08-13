@@ -911,6 +911,17 @@ mod tests {
     }
 
     #[test]
+    fn cubicbez_inv_arclen_huge_arclen() {
+        // When the arc length is more than `accuracy * 2^64`, `inv_arclen`
+        // passes a relative tolerance below 2^-64 to the ITP solver, which used
+        // to overflow a shift (debug) or hang (release). See #602.
+        let c = CubicBez::new((0.0, 0.0), (1e12, 0.0), (0.0, 0.0), (1.0, 0.0));
+        let true_arclen = c.arclen(1e-9);
+        let t = c.inv_arclen(true_arclen * 0.5, 1e-9);
+        assert!((0.0..=1.0).contains(&t), "t out of range: {t}");
+    }
+
+    #[test]
     fn cubicbez_inv_arclen_accuracy() {
         let c = CubicBez::new((0.2, 0.73), (0.35, 1.08), (0.85, 1.08), (1.0, 0.73));
         let true_t = c.inv_arclen(0.5, 1e-12);

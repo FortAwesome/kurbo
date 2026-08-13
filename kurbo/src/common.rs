@@ -642,10 +642,13 @@ fn depressed_cubic_dominant(g: f64, h: f64) -> f64 {
 /// It is assumed that `ya < 0.0` and `yb > 0.0`, otherwise unexpected
 /// results may occur.
 ///
-/// The value of `epsilon` must be larger than 2^-63 times `b - a`,
-/// otherwise integer overflow may occur. The `a` and `b` parameters
-/// represent the lower and upper bounds of the bracket searched for a
-/// solution.
+/// The `a` and `b` parameters represent the lower and upper bounds of
+/// the bracket searched for a solution.
+///
+/// A value of `epsilon` smaller than 2^-63 times `b - a` is treated as
+/// if it were exactly that, as finer tolerances are not achievable in
+/// f64 arithmetic. Such a search runs until the bracket can no longer
+/// be narrowed, and the result is then as accurate as f64 allows.
 ///
 /// The ITP method has tuning parameters. This implementation hardwires
 /// k2 to 2, both because it avoids an expensive floating point
@@ -708,10 +711,23 @@ pub(crate) fn solve_itp_fallible<E>(
     mut ya: f64,
     mut yb: f64,
 ) -> Result<(f64, f64), E> {
+    // A tolerance finer than 2^-63 times the width of the bracket can't be
+    // resolved in f64 anyway, and would push the shift below out of range: it
+    // panics on overflow in a debug build, and in a release build wraps around
+    // to a `scaled_epsilon` that stops the loop from converging at all.
+    let epsilon = epsilon.max((b - a) / (1u64 << 63) as f64);
     let n1_2 = (((b - a) / epsilon).log2().ceil() - 1.0).max(0.0) as usize;
-    let nmax = n0 + n1_2;
+    // With `epsilon` clamped, `n1_2` is at most 62, but `n0` is the caller's.
+    let nmax = (n0 + n1_2).min(63);
     let mut scaled_epsilon = epsilon * (1u64 << nmax) as f64;
-    while b - a > 2.0 * epsilon {
+    // Even with a sane `epsilon`, a bracket that has collapsed to adjacent
+    // floats can't be narrowed to `2.0 * epsilon`, and the loop would then spin
+    // on an unmoving bracket. This cap is far more iterations than convergence
+    // takes (the method needs at most `nmax` of them), so it never cuts short a
+    // search that is still making progress, but it does bound such a spin.
+    let mut iters_remaining = 2000;
+    while b - a > 2.0 * epsilon && iters_remaining > 0 {
+        iters_remaining -= 1;
         let x1_2 = 0.5 * (a + b);
         let r = scaled_epsilon - 0.5 * (b - a);
         let xf = (yb * a - ya * b) / (yb - ya);
@@ -1095,6 +1111,16 @@ mod tests {
         let f = |x: f64| x.powi(3) - x - 2.0;
         let x = solve_itp(f, 1., 2., 1e-12, 0, 0.2, f(1.), f(2.));
         assert!(f(x).abs() < 6e-12);
+    }
+
+    #[test]
+    fn test_solve_itp_tiny_epsilon() {
+        // An `epsilon` this small relative to the bracket makes the internal
+        // shift width exceed 63; that used to overflow (debug) or wrap around
+        // and spin forever (release). See #602.
+        let f = |x: f64| x.powi(3) - x - 2.0;
+        let x = solve_itp(f, 1., 2., 1e-25, 1, 0.2, f(1.), f(2.));
+        assert!(f(x).abs() < 1e-9, "got {x}");
     }
 
     #[test]

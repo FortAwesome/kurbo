@@ -22,6 +22,7 @@ This release has an [MSRV][] of 1.85.
 
 - `fit_to_cubic` no longer gives up on a range whose endpoints are close together but whose curve doubles back on itself, which could make `fit_to_bezpath_opt` panic on near-degenerate paths. ([#603][])
 - `fit_to_bezpath_opt` no longer panics when a range accepted by its segment search turns out not to fit; it subdivides and retries instead. ([#603][])
+- `solve_itp` no longer overflows a shift (debug builds) or loops forever (release builds) when `epsilon` is tiny relative to the bracket, which made `inv_arclen`, and in turn `fit_to_bezpath_opt`, hang on some inputs.
 
 ## [0.13.1][] (2026-05-13)
 
