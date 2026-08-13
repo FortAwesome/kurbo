@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "kurbo"
-version = "0.13.2-fa.1"
+version = "0.13.2"
 dependencies = [
  "arrayvec",
  "criterion",
