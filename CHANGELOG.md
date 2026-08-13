@@ -18,6 +18,10 @@ This release has an [MSRV][] of 1.85.
 ## Added
 - `serde` and `schemars` support for `Axis`. ([#591][] by [@waywardmonkeys][])
 
+## Fixed
+
+- `solve_itp` no longer overflows a shift (debug builds) or loops forever (release builds) when `epsilon` is tiny relative to the bracket, which made `inv_arclen`, and in turn `fit_to_bezpath_opt`, hang on some inputs.
+
 ## [0.13.1][] (2026-05-13)
 
 This release has an [MSRV][] of 1.85.
