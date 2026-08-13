@@ -396,7 +396,17 @@ pub fn fit_to_cubic(
     let acc2 = accuracy * accuracy;
     if chord2 <= acc2 {
         // Special case very short chords; try to fit a line.
-        return try_fit_line(source, accuracy, range, start.p, end.p);
+        if let Some(line) = try_fit_line(source, accuracy, range.clone(), start.p, end.p) {
+            return Some(line);
+        }
+        if chord2 == 0.0 {
+            // The cubic fit below is scaled by the chord, so it can't do
+            // anything with a zero-length one.
+            return None;
+        }
+        // A short chord doesn't imply a short curve: the source can double back
+        // on itself, in which case a line is a poor fit but a cubic may not be.
+        // Fall through to the general fit rather than giving up here.
     }
     let th = d.atan2();
     fn mod_2pi(th: f64) -> f64 {

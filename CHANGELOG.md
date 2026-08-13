@@ -18,6 +18,10 @@ This release has an [MSRV][] of 1.85.
 ## Added
 - `serde` and `schemars` support for `Axis`. ([#591][] by [@waywardmonkeys][])
 
+## Fixed
+
+- `fit_to_cubic` no longer gives up on a range whose endpoints are close together but whose curve doubles back on itself, which could make `fit_to_bezpath_opt` panic on near-degenerate paths. ([#597][] by [@mlwilkerson][])
+
 ## [0.13.1][] (2026-05-13)
 
 This release has an [MSRV][] of 1.85.
@@ -215,6 +219,7 @@ Note: A changelog was not kept for or before this release
 [@nils-mathieu]: https://github.com/nils-mathieu
 [@Philipp-M]: https://github.com/Philipp-M
 [@platlas]: https://github.com/platlas
+[@mlwilkerson]: https://github.com/mlwilkerson
 [@PoignardAzur]: https://github.com/PoignardAzur
 [@raphlinus]: https://github.com/raphlinus
 [@RobertBrewitz]: https://github.com/RobertBrewitz
@@ -317,6 +322,7 @@ Note: A changelog was not kept for or before this release
 [#580]: https://github.com/linebender/kurbo/pull/580
 [#585]: https://github.com/linebender/kurbo/pull/585
 [#591]: https://github.com/linebender/kurbo/pull/591
+[#597]: https://github.com/linebender/kurbo/pull/597
 
 [Unreleased]: https://github.com/linebender/kurbo/compare/v0.13.1...HEAD
 [0.13.1]: https://github.com/linebender/kurbo/releases/tag/v0.13.1
