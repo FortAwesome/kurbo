@@ -378,9 +378,9 @@ impl SimplifyOptions {
 
 #[cfg(test)]
 mod tests {
-    use crate::BezPath;
+    use crate::{BezPath, PathEl, Point, Shape, Vec2};
 
-    use super::{SimplifyOptions, simplify_bezpath};
+    use super::{SimplifyBezPath, SimplifyOptLevel, SimplifyOptions, simplify_bezpath};
 
     #[test]
     fn simplify_lines_corner() {
@@ -392,5 +392,115 @@ mod tests {
         let options = SimplifyOptions::default();
         let simplified = simplify_bezpath(path.clone(), 1.0, &options);
         assert_eq!(path, simplified);
+    }
+
+    /// All points of a path, control points included.
+    fn all_points(path: &BezPath) -> Vec<Point> {
+        path.elements()
+            .iter()
+            .flat_map(|el| match *el {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => vec![p],
+                PathEl::QuadTo(p1, p2) => vec![p1, p2],
+                PathEl::CurveTo(p1, p2, p3) => vec![p1, p2, p3],
+                PathEl::ClosePath => vec![],
+            })
+            .collect()
+    }
+
+    // A shallow curve arriving at (493.93, 324), then a straight backtrack
+    // along y = 324. Fitting across that 180 degree fold used to produce a
+    // control point tens of thousands of units away, which the fitter's own
+    // error metric reported as an essentially exact fit.
+    //
+    // See https://github.com/linebender/kurbo/issues/604
+    const FOLD_PTS: &[(f64, f64)] = &[
+        (486.53000000000003, 325.49),
+        (488.93, 324.68),
+        (491.41, 324.18),
+        (493.93, 324.0),
+        (415.74, 324.0),
+    ];
+
+    fn fold_path() -> BezPath {
+        let mut path = BezPath::new();
+        path.move_to(Point::new(FOLD_PTS[0].0, FOLD_PTS[0].1));
+        for (x, y) in &FOLD_PTS[1..] {
+            path.line_to(Point::new(*x, *y));
+        }
+        path
+    }
+
+    /// Fit the fold path directly, bypassing corner detection.
+    ///
+    /// Even when a fold is handed to the fitter, it must not accept a curve
+    /// that wanders far outside the source.
+    #[test]
+    fn fit_opt_fold_no_control_point_excursion() {
+        let path = fold_path();
+        let accuracy = 2.0;
+        let bbox = path.bounding_box().inflate(4.0 * accuracy, 4.0 * accuracy);
+        let s = SimplifyBezPath::new(&path);
+        let fitted = crate::fit_to_bezpath_opt(&s, accuracy);
+        for p in all_points(&fitted) {
+            assert!(
+                bbox.contains(p),
+                "fitted path point {p:?} is outside {bbox:?}; path is {}",
+                fitted.to_svg()
+            );
+        }
+    }
+
+    /// The moment integrals used for fitting are documented as being invariant
+    /// to translation; make sure the arithmetic actually is.
+    #[test]
+    fn fit_opt_translation_invariance() {
+        let accuracy = 2.0;
+        let path = fold_path();
+        let s = SimplifyBezPath::new(&path);
+        let fitted = crate::fit_to_bezpath_opt(&s, accuracy);
+
+        // The same shape, translated so it sits near the origin.
+        let offset = Vec2::new(-400.0, -324.0);
+        let translated = crate::Affine::translate(offset) * path;
+        let s = SimplifyBezPath::new(&translated);
+        let fitted_translated = crate::fit_to_bezpath_opt(&s, accuracy);
+
+        let pts = all_points(&fitted);
+        let pts_translated = all_points(&fitted_translated);
+        assert_eq!(
+            pts.len(),
+            pts_translated.len(),
+            "fit differs by translation: {} vs {}",
+            fitted.to_svg(),
+            fitted_translated.to_svg()
+        );
+        for (p, q) in pts.iter().zip(&pts_translated) {
+            assert!(
+                (*p + offset).distance(*q) < accuracy,
+                "fit differs by translation at {p:?} vs {q:?}: {} vs {}",
+                fitted.to_svg(),
+                fitted_translated.to_svg()
+            );
+        }
+    }
+
+    #[test]
+    fn simplify_fold_no_control_point_excursion() {
+        let path = fold_path();
+        let accuracy = 2.0;
+        let bbox = path.bounding_box().inflate(4.0 * accuracy, 4.0 * accuracy);
+        for opt_level in [SimplifyOptLevel::Subdivide, SimplifyOptLevel::Optimize] {
+            let options = SimplifyOptions::default()
+                .angle_thresh(0.25)
+                .opt_level(opt_level);
+            let simplified = simplify_bezpath(path.iter(), accuracy, &options);
+            for p in all_points(&simplified) {
+                assert!(
+                    bbox.contains(p),
+                    "simplified path point {p:?} is outside {bbox:?}; path is {}",
+                    simplified.to_svg()
+                );
+            }
+        }
     }
 }
