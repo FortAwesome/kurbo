@@ -48,11 +48,19 @@ use crate::{
 /// and how this struct is to be used.
 ///
 /// [module-level documentation]: crate::simplify
-pub struct SimplifyBezPath(Vec<SimplifyCubic>);
+pub struct SimplifyBezPath {
+    els: Vec<SimplifyCubic>,
+    /// The reference point the moment integrals are computed relative to.
+    ///
+    /// The moments are accumulated relative to this point rather than in
+    /// absolute coordinates, so that a path far from the origin doesn't lose
+    /// most of its precision to cancellation.
+    origin: Point,
+}
 
 struct SimplifyCubic {
     c: CubicBez,
-    // The inclusive prefix sum of the moment integrals
+    // The inclusive prefix sum of the moment integrals, relative to `origin`
     moments: (f64, f64, f64),
 }
 
@@ -152,60 +160,80 @@ impl SimplifyBezPath {
     /// Currently this is not dealing with discontinuities at all, but it
     /// could be extended to do so.
     pub fn new(path: impl IntoIterator<Item = PathEl>) -> Self {
+        let mut origin = Point::ORIGIN;
         let (mut a, mut x, mut y) = (0.0, 0.0, 0.0);
-        let els = crate::segments(path)
-            .map(|seg| {
-                let c = seg.to_cubic();
-                let (ai, xi, yi) = moment_integrals(c);
-                a += ai;
-                x += xi;
-                y += yi;
-                SimplifyCubic {
-                    c,
-                    moments: (a, x, y),
-                }
-            })
-            .collect();
-        SimplifyBezPath(els)
+        let mut els: Vec<SimplifyCubic> = Vec::new();
+        for seg in crate::segments(path) {
+            let c = seg.to_cubic();
+            if els.is_empty() {
+                origin = c.p0;
+            }
+            let (ai, xi, yi) = moment_integrals(translate(c, origin));
+            a += ai;
+            x += xi;
+            y += yi;
+            els.push(SimplifyCubic {
+                c,
+                moments: (a, x, y),
+            });
+        }
+        SimplifyBezPath { els, origin }
     }
 
     /// Resolve a `t` value to a cubic.
     ///
     /// Also return the resulting `t` value for the selected cubic.
     fn scale(&self, t: f64) -> (usize, f64) {
-        let t_scale = t * self.0.len() as f64;
+        let t_scale = t * self.els.len() as f64;
         let t_floor = t_scale.floor();
         (t_floor as usize, t_scale - t_floor)
     }
 
+    /// Moment integrals of a subsegment, relative to `self.origin`.
     fn moment_integrals(&self, i: usize, range: Range<f64>) -> (f64, f64, f64) {
         if range.end == range.start {
             (0.0, 0.0, 0.0)
         } else {
-            moment_integrals(self.0[i].c.subsegment(range))
+            moment_integrals(translate(self.els[i].c.subsegment(range), self.origin))
         }
     }
+
+    /// Evaluate the curve, clamping the parameter to the valid range.
+    fn eval(&self, t: f64) -> Point {
+        let (mut i, mut t0) = self.scale(t);
+        if i == self.els.len() {
+            i -= 1;
+            t0 = 1.0;
+        }
+        self.els[i].c.eval(t0)
+    }
+}
+
+/// Translate a cubic so that `origin` is at the origin.
+fn translate(c: CubicBez, origin: Point) -> CubicBez {
+    let v = origin.to_vec2();
+    CubicBez::new(c.p0 - v, c.p1 - v, c.p2 - v, c.p3 - v)
 }
 
 impl ParamCurveFit for SimplifyBezPath {
     fn sample_pt_deriv(&self, t: f64) -> (Point, Vec2) {
         let (mut i, mut t0) = self.scale(t);
-        let n = self.0.len();
+        let n = self.els.len();
         if i == n {
             i -= 1;
             t0 = 1.0;
         }
-        let c = self.0[i].c;
+        let c = self.els[i].c;
         (c.eval(t0), c.deriv().eval(t0).to_vec2() * n as f64)
     }
 
     fn sample_pt_tangent(&self, t: f64, _: f64) -> CurveFitSample {
         let (mut i, mut t0) = self.scale(t);
-        if i == self.0.len() {
+        if i == self.els.len() {
             i -= 1;
             t0 = 1.0;
         }
-        let c = self.0[i].c;
+        let c = self.els[i].c;
         let p = c.eval(t0);
         let tangent = c.deriv().eval(t0).to_vec2();
         CurveFitSample { p, tangent }
@@ -217,21 +245,39 @@ impl ParamCurveFit for SimplifyBezPath {
     fn moment_integrals(&self, range: Range<f64>) -> (f64, f64, f64) {
         let (i0, t0) = self.scale(range.start);
         let (i1, t1) = self.scale(range.end);
-        if i0 == i1 {
+        // These are relative to `self.origin`.
+        let (a, x, y) = if i0 == i1 {
             self.moment_integrals(i0, t0..t1)
         } else {
             let (a0, x0, y0) = self.moment_integrals(i0, t0..1.0);
             let (a1, x1, y1) = self.moment_integrals(i1, 0.0..t1);
             let (mut a, mut x, mut y) = (a0 + a1, x0 + x1, y0 + y1);
             if i1 > i0 + 1 {
-                let (a2, x2, y2) = self.0[i0].moments;
-                let (a3, x3, y3) = self.0[i1 - 1].moments;
+                let (a2, x2, y2) = self.els[i0].moments;
+                let (a3, x3, y3) = self.els[i1 - 1].moments;
                 a += a3 - a2;
                 x += x3 - x2;
                 y += y3 - y2;
             }
             (a, x, y)
-        }
+        };
+        // Shift the reference point from `self.origin` to the start of the
+        // range, as the trait requires. With `u = x - origin.x` and
+        // `v = y - origin.y`, and `s` the start point relative to `origin`:
+        //
+        // ∫(v - s.y) dx           = a - s.y ∫dx
+        // ∫(u - s.x)(v - s.y) dx  = x - s.x a - s.y ∫u dx + s.x s.y ∫dx
+        // ∫(v - s.y)² dx          = y - 2 s.y a + s.y² ∫dx
+        //
+        // where `∫dx` and `∫u dx` over the range depend only on its endpoints.
+        let s = self.eval(range.start) - self.origin;
+        let u_end = self.eval(range.end).x - self.origin.x;
+        let int_dx = u_end - s.x;
+        let int_u_dx = 0.5 * (u_end + s.x) * int_dx;
+        let x = x - s.x * a - s.y * int_u_dx + s.x * s.y * int_dx;
+        let y = y - 2.0 * s.y * a + s.y * s.y * int_dx;
+        let a = a - s.y * int_dx;
+        (a, x, y)
     }
 
     fn break_cusp(&self, _: Range<f64>) -> Option<f64> {
@@ -344,9 +390,14 @@ pub fn simplify_bezpath(
             if let Some(last) = last_seg {
                 let last_tan = last.tangents().1;
                 let this_tan = seg.tangents().0;
-                if last_tan.cross(this_tan).abs()
-                    > last_tan.dot(this_tan).abs() * options.angle_thresh
-                {
+                let cross = last_tan.cross(this_tan);
+                let dot = last_tan.dot(this_tan);
+                // The `|sin θ| > |cos θ| * thresh` test is periodic with period π,
+                // so on its own it cannot tell a fold from a straight join; a 180°
+                // reversal scores as well as no turn at all. A negative dot product
+                // means the turn is more than a right angle, which is always a
+                // corner, so test that separately.
+                if dot <= 0.0 || cross.abs() > dot * options.angle_thresh {
                     state.flush(accuracy, options);
                 }
             }
@@ -369,7 +420,9 @@ impl SimplifyOptions {
     /// Set angle threshold.
     ///
     /// The tangent of the angle below which joins are considered smooth and
-    /// not corners. The default is approximately 1 milliradian.
+    /// not corners. The default is approximately 1 milliradian. A join turning
+    /// by more than a right angle is always considered a corner, whatever the
+    /// threshold.
     pub fn angle_thresh(mut self, thresh: f64) -> Self {
         self.angle_thresh = thresh;
         self
@@ -378,7 +431,7 @@ impl SimplifyOptions {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BezPath, PathEl, Point, Shape, Vec2};
+    use crate::{BezPath, ParamCurve, ParamCurveFit, PathEl, Point, Shape, Vec2};
 
     use super::{SimplifyBezPath, SimplifyOptLevel, SimplifyOptions, simplify_bezpath};
 
@@ -450,38 +503,91 @@ mod tests {
         }
     }
 
-    /// The moment integrals used for fitting are documented as being invariant
+    /// The quantities the fit is derived from are documented as being invariant
     /// to translation; make sure the arithmetic actually is.
+    ///
+    /// Computing the moment integrals in absolute coordinates loses about 14 of
+    /// f64's ~16 digits to cancellation for a path this far from the origin,
+    /// leaving the control arm lengths derived from them meaningless.
+    #[test]
+    fn moment_integrals_translation_invariance() {
+        let path = fold_path();
+        // The same shape, translated so it sits near the origin.
+        let offset = Vec2::new(-400.0, -324.0);
+        let translated = crate::Affine::translate(offset) * path.clone();
+
+        let s = SimplifyBezPath::new(&path);
+        let s_translated = SimplifyBezPath::new(&translated);
+        for (t0, t1) in [
+            (0.0, 1.0),
+            (0.0, 0.5),
+            (0.6, 1.0),
+            (0.75, 1.0),
+            (0.1, 0.2),
+            (0.45, 0.55),
+        ] {
+            let m = ParamCurveFit::moment_integrals(&s, t0..t1);
+            let m_translated = ParamCurveFit::moment_integrals(&s_translated, t0..t1);
+            for (v, w) in [
+                (m.0, m_translated.0),
+                (m.1, m_translated.1),
+                (m.2, m_translated.2),
+            ] {
+                // The paths differ by about 1e-14 relative, as translating them
+                // rounds; allow a good deal more than that but far less than
+                // the loss from cancellation.
+                let tol = 1e-9 * v.abs().max(w.abs()).max(1e-6);
+                assert!(
+                    (v - w).abs() <= tol,
+                    "moment integrals over {t0}..{t1} are not translation invariant: \
+                     {m:?} vs {m_translated:?}"
+                );
+            }
+        }
+    }
+
+    /// The fit itself should not change materially when the path is translated.
     #[test]
     fn fit_opt_translation_invariance() {
         let accuracy = 2.0;
         let path = fold_path();
-        let s = SimplifyBezPath::new(&path);
-        let fitted = crate::fit_to_bezpath_opt(&s, accuracy);
-
-        // The same shape, translated so it sits near the origin.
         let offset = Vec2::new(-400.0, -324.0);
-        let translated = crate::Affine::translate(offset) * path;
-        let s = SimplifyBezPath::new(&translated);
-        let fitted_translated = crate::fit_to_bezpath_opt(&s, accuracy);
+        let translated = crate::Affine::translate(offset) * path.clone();
 
-        let pts = all_points(&fitted);
-        let pts_translated = all_points(&fitted_translated);
-        assert_eq!(
-            pts.len(),
-            pts_translated.len(),
-            "fit differs by translation: {} vs {}",
+        let fitted = crate::fit_to_bezpath_opt(&SimplifyBezPath::new(&path), accuracy);
+        let fitted_translated =
+            crate::fit_to_bezpath_opt(&SimplifyBezPath::new(&translated), accuracy);
+
+        // Compare the two as shapes: the control points, the subdivision points
+        // and even the number of segments are free to differ a little.
+        let shifted = crate::Affine::translate(offset) * fitted.clone();
+        let d = max_deviation(&shifted, &fitted_translated)
+            .max(max_deviation(&fitted_translated, &shifted));
+        assert!(
+            d < accuracy,
+            "fit differs by translation by {d}: {} vs {}",
             fitted.to_svg(),
             fitted_translated.to_svg()
         );
-        for (p, q) in pts.iter().zip(&pts_translated) {
-            assert!(
-                (*p + offset).distance(*q) < accuracy,
-                "fit differs by translation at {p:?} vs {q:?}: {} vs {}",
-                fitted.to_svg(),
-                fitted_translated.to_svg()
-            );
+    }
+
+    /// An approximate one-sided Hausdorff distance from `a` to `b`.
+    fn max_deviation(a: &BezPath, b: &BezPath) -> f64 {
+        use crate::ParamCurveNearest;
+        const N: usize = 100;
+        let segs: Vec<_> = b.segments().collect();
+        let mut max_dist2: f64 = 0.0;
+        for seg in a.segments() {
+            for i in 0..=N {
+                let p = seg.eval(i as f64 / N as f64);
+                let dist2 = segs
+                    .iter()
+                    .map(|s| s.nearest(p, 1e-9).distance_sq)
+                    .fold(f64::INFINITY, f64::min);
+                max_dist2 = max_dist2.max(dist2);
+            }
         }
+        max_dist2.sqrt()
     }
 
     #[test]

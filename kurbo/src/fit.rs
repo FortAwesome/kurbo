@@ -70,12 +70,20 @@ pub trait ParamCurveFit {
     /// length of this curve. From these integrals it is fairly straightforward
     /// to derive the moments needed for curve fitting.
     ///
+    /// The integrals are computed in coordinates *relative to the start point
+    /// of the range*, in other words as if the curve were translated so that
+    /// the point at `range.start` is at the origin. The quantities derived from
+    /// them are invariant to translation, and computing them in absolute
+    /// coordinates loses that invariance to catastrophic cancellation when the
+    /// curve is far from the origin relative to its own size.
+    ///
     /// A default implementation is provided which does quadrature integration
     /// with Green's theorem, in terms of samples evaluated with
     /// [`sample_pt_deriv`].
     ///
     /// [`sample_pt_deriv`]: ParamCurveFit::sample_pt_deriv
     fn moment_integrals(&self, range: Range<f64>) -> (f64, f64, f64) {
+        let origin = self.sample_pt_deriv(range.start).0;
         let t0 = 0.5 * (range.start + range.end);
         let dt = 0.5 * (range.end - range.start);
         let (a, x, y) = GAUSS_LEGENDRE_COEFFS_16
@@ -83,9 +91,10 @@ pub trait ParamCurveFit {
             .map(|(wi, xi)| {
                 let t = t0 + xi * dt;
                 let (p, d) = self.sample_pt_deriv(t);
-                let a = wi * d.x * p.y;
-                let x = p.x * a;
-                let y = p.y * a;
+                let (px, py) = (p.x - origin.x, p.y - origin.y);
+                let a = wi * d.x * py;
+                let x = px * a;
+                let y = py * a;
                 (a, x, y)
             })
             .fold((0.0, 0.0, 0.0), |(a0, x0, y0), (a1, x1, y1)| {
@@ -344,6 +353,20 @@ impl CurveDist {
 const D_PENALTY_ELBOW: f64 = 0.65;
 const D_PENALTY_SLOPE: f64 = 2.0;
 
+/// The maximum control arm length, relative to the chord.
+///
+/// The penalty above is a multiplier on the measured error, and the error
+/// metric is one-sided: it measures the distance from samples of the source to
+/// the candidate, but not the other way round. A candidate whose image covers
+/// the source and then wanders far beyond it therefore measures an error near
+/// zero, and no multiplicative penalty can rescue that. So candidates with
+/// arms this much longer than the chord are rejected outright.
+///
+/// For reference, a circular arc of three quarters of a turn is fit with arms
+/// of about 2.3 chords; beyond that a single cubic is not a useful fit anyway,
+/// and subdividing gives a better result.
+const D_MAX: f64 = 5.0;
+
 /// Try fitting a line.
 ///
 /// This is especially useful for very short chords, in which the standard
@@ -406,21 +429,21 @@ pub fn fit_to_cubic(
     let th0 = mod_2pi(start.tangent.atan2() - th);
     let th1 = mod_2pi(th - end.tangent.atan2());
 
+    // These integrals are relative to the start point of the range, so the
+    // start point is already at the origin.
     let (mut area, mut x, mut y) = source.moment_integrals(range.clone());
-    let (x0, y0) = (start.p.x, start.p.y);
     let (dx, dy) = (d.x, d.y);
     // Subtract off area of chord
-    area -= dx * (y0 + 0.5 * dy);
+    area -= 0.5 * dx * dy;
     // `area` is signed area of closed curve segment.
     // This quantity is invariant to translation and rotation.
 
     // Subtract off moment of chord
     let dy_3 = dy * (1. / 3.);
-    x -= dx * (x0 * y0 + 0.5 * (x0 * dy + y0 * dx) + dy_3 * dx);
-    y -= dx * (y0 * y0 + y0 * dy + dy_3 * dy);
-    // Translate start point to origin; convert raw integrals to moments.
-    x -= x0 * area;
-    y = 0.5 * y - y0 * area;
+    x -= dx * dx * dy_3;
+    y -= dx * dy * dy_3;
+    // Convert raw integrals to moments.
+    y *= 0.5;
     // Rotate into place (this also scales up by chordlength for efficiency).
     let moment = d.x * x + d.y * y;
     // `moment` is the chordlength times the x moment of the curve translated
@@ -531,8 +554,7 @@ fn cubic_fit(th0: f64, th1: f64, area: f64, mx: f64) -> ArrayVec<(CubicBez, f64,
             } else {
                 (0.0, s0 / s01)
             };
-            // We could implement a maximum d value here.
-            if d0 >= 0.0 && d1 >= 0.0 {
+            if (0.0..=D_MAX).contains(&d0) && (0.0..=D_MAX).contains(&d1) {
                 Some((
                     CubicBez::new(
                         (0.0, 0.0),

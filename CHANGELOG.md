@@ -18,6 +18,14 @@ This release has an [MSRV][] of 1.85.
 ## Added
 - `serde` and `schemars` support for `Axis`. ([#591][] by [@waywardmonkeys][])
 
+## Changed
+
+- `ParamCurveFit::moment_integrals` now computes its integrals relative to the start point of the range, rather than in absolute coordinates. Implementers overriding the default implementation need to update accordingly. ([#604][])
+
+## Fixed
+
+- `simplify_bezpath` no longer fits across a 180 degree fold, which could produce a control point tens of thousands of units outside the input while reporting the fit as exact. ([#604][])
+
 ## [0.13.1][] (2026-05-13)
 
 This release has an [MSRV][] of 1.85.
@@ -317,6 +325,7 @@ Note: A changelog was not kept for or before this release
 [#580]: https://github.com/linebender/kurbo/pull/580
 [#585]: https://github.com/linebender/kurbo/pull/585
 [#591]: https://github.com/linebender/kurbo/pull/591
+[#604]: https://github.com/linebender/kurbo/issues/604
 
 [Unreleased]: https://github.com/linebender/kurbo/compare/v0.13.1...HEAD
 [0.13.1]: https://github.com/linebender/kurbo/releases/tag/v0.13.1
