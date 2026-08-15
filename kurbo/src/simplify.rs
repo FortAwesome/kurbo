@@ -378,9 +378,9 @@ impl SimplifyOptions {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BezPath, Point, fit_to_bezpath_opt};
+    use crate::{BezPath, PathSeg, Point, fit_to_bezpath_opt};
 
-    use super::{SimplifyBezPath, SimplifyOptions, simplify_bezpath};
+    use super::{SimplifyBezPath, SimplifyOptLevel, SimplifyOptions, simplify_bezpath};
 
     #[test]
     fn simplify_lines_corner() {
@@ -431,5 +431,32 @@ mod tests {
         path.close_path();
         let simplified = fit_to_bezpath_opt(&SimplifyBezPath::new(path), 2.0);
         assert!(!simplified.is_empty());
+    }
+
+    #[test]
+    fn simplify_optimize_end_tangent() {
+        // Quarter circle of radius 100, sampled at 32 chords: from (100, 0) to
+        // (0, 100). The polyline arrives at its last point travelling (-1, 0).
+        let mut path = BezPath::new();
+        path.move_to((100., 0.));
+        for i in 1..=32 {
+            let th = (i as f64) * core::f64::consts::FRAC_PI_2 / 32.0;
+            path.line_to((100. * th.cos(), 100. * th.sin()));
+        }
+        let options = SimplifyOptions::default()
+            .angle_thresh(0.25)
+            .opt_level(SimplifyOptLevel::Optimize);
+        let simplified = simplify_bezpath(path, 1.0, &options);
+        let Some(PathSeg::Cubic(c)) = simplified.segments().last() else {
+            panic!("expected simplification to produce a cubic");
+        };
+        let arrival = c.p3 - c.p2;
+        assert!(
+            arrival.x < 0.,
+            "end tangent reversed: fit arrives travelling ({:+.3}, {:+.3}), \
+             the polyline arrives travelling (-1, 0)",
+            arrival.x,
+            arrival.y,
+        );
     }
 }
