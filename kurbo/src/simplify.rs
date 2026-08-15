@@ -207,7 +207,12 @@ impl ParamCurveFit for SimplifyBezPath {
         }
         let c = self.0[i].c;
         let p = c.eval(t0);
-        let tangent = c.deriv().eval(t0).to_vec2();
+        let mut tangent = c.deriv().eval(t0).to_vec2();
+        if tangent.hypot2() == 0.0 {
+            // Non-regular cubic (e.g. a line converted by `to_cubic`, whose
+            // derivative vanishes at its endpoints): fall back to the chord.
+            tangent = c.p3 - c.p0;
+        }
         CurveFitSample { p, tangent }
     }
 
